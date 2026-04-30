@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>美股中文搜索与量化系统</title>
+  <style>
+    :root {
+      --bg: #f3f6fb;
+      --card: #ffffff;
+      --text: #1f2a37;
+      --muted: #6b7280;
+      --brand: #0f766e;
+      --brand2: #14b8a6;
+      --up: #dc2626;
+      --down: #16a34a;
+    }
+    body { margin: 0; font-family: "PingFang SC", "Helvetica Neue", sans-serif; color: var(--text); background: radial-gradient(circle at 10% 10%, #d5f5f2 0, #eef4ff 40%, #f6f8fc 100%); }
+    .wrap { max-width: 1180px; margin: 0 auto; padding: 20px; }
+    .card { background: var(--card); border-radius: 14px; padding: 16px; box-shadow: 0 8px 22px rgba(15,118,110,.08); }
+    h1 { margin: 0; }
+    .muted { color: var(--muted); }
+    .searchbar { display: grid; grid-template-columns: 2.2fr 1fr 1fr 130px; gap: 10px; margin-top: 12px; }
+    input, select, button { width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 10px; box-sizing: border-box; }
+    button { background: var(--brand); color: #fff; border: none; font-weight: 700; cursor: pointer; }
+    button:hover { background: var(--brand2); }
+    .grid { margin-top: 16px; display: grid; grid-template-columns: 1.45fr 1fr; gap: 16px; }
+    #kline { width: 100%; height: 360px; border: 1px solid #e5e7eb; border-radius: 10px; }
+    .kv { display: grid; grid-template-columns: 120px 1fr; font-size: 14px; row-gap: 8px; column-gap: 8px; }
+    .k { color: #475569; }
+    .tableWrap { overflow: auto; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+    th, td { border-bottom: 1px solid #e5e7eb; text-align: left; padding: 7px; white-space: nowrap; }
+    .section { margin-top: 12px; }
+    @media (max-width: 980px) {
+      .searchbar { grid-template-columns: 1fr; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>美股中文搜索与量化研究</h1>
+    <div class="muted">输入中文公司名或代码（例如：苹果 / 英伟达 / AAPL / NVDA），返回真实 K 线、公司资料与财务数据</div>
+    <div class="searchbar">
+      <input id="q" placeholder="输入中文名或Ticker，例如：特斯拉、微软、AAPL" />
+      <select id="period">
+        <option value="3mo">3个月</option>
+        <option value="6mo" selected>6个月</option>
+        <option value="1y">1年</option>
+        <option value="2y">2年</option>
+      </select>
+      <select id="interval">
+        <option value="1d" selected>日K</option>
+        <option value="1wk">周K</option>
+      </select>
+      <button id="go">搜索</button>
+    </div>
+    <div id="status" class="muted" style="margin-top:10px;"></div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h3>K线图</h3>
+      <canvas id="kline"></canvas>
+    </div>
+
+    <div class="card">
+      <h3>公司资料</h3>
+      <div id="profile" class="kv"></div>
+    </div>
+  </div>
+
+  <div class="card section">
+    <h3>财务摘要</h3>
+    <div id="summary" class="kv"></div>
+  </div>
+
+  <div class="card section">
+    <h3>利润表（最近期）</h3>
+    <div id="income" class="tableWrap"></div>
+    <h3>资产负债表（最近期）</h3>
+    <div id="balance" class="tableWrap"></div>
+    <h3>现金流量表（最近期）</h3>
+    <div id="cashflow" class="tableWrap"></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function fmt(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return '-';
+  const n = Number(v);
+  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(2) + 'K';
+  return String(n.toFixed(4)).replace(/\.0+$/, '');
+}
+
+function renderKV(el, obj) {
+  el.innerHTML = '';
+  Object.entries(obj).forEach(([k, v]) => {
+    const kEl = document.createElement('div');
+    kEl.className = 'k';
+    kEl.textContent = k;
+    const vEl = document.createElement('div');
+    vEl.textContent = v || '-';
+    el.appendChild(kEl); el.appendChild(vEl);
+  });
+}
+
+function renderTable(el, rows) {
+  if (!rows || !rows.length) { el.innerHTML = '<div class="muted">暂无数据</div>'; return; }
+  const cols = Object.keys(rows[0]);
+  const colMap = {
+    metric: '指标',
+  };
+  let html = '<table><thead><tr>' + cols.map(c => `<th>${c}</th>`).join('') + '</tr></thead><tbody>';
+  html = '<table><thead><tr>' + cols.map(c => `<th>${colMap[c] || c}</th>`).join('') + '</tr></thead><tbody>';
+  for (const r of rows) {
+    html += '<tr>' + cols.map(c => `<td>${c === 'metric' ? r[c] : fmt(r[c])}</td>`).join('') + '</tr>';
+  }
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+function drawKline(data) {
+  const c = $('kline');
+  const ctx = c.getContext('2d');
+  c.width = c.clientWidth;
+  c.height = c.clientHeight;
+  ctx.clearRect(0, 0, c.width, c.height);
+  if (!data || data.length < 2) return;
+
+  const highs = data.map(d => d.high);
+  const lows = data.map(d => d.low);
+  const maxP = Math.max(...highs);
+  const minP = Math.min(...lows);
+  const leftPad = 56;
+  const rightPad = 18;
+  const topPad = 16;
+  const bottomPad = 34;
+  const plotW = c.width - leftPad - rightPad;
+  const plotH = c.height - topPad - bottomPad;
+  const w = plotW / data.length;
+
+  // Axes + grid
+  ctx.strokeStyle = '#cbd5e1';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(leftPad, topPad);
+  ctx.lineTo(leftPad, c.height - bottomPad);
+  ctx.lineTo(c.width - rightPad, c.height - bottomPad);
+  ctx.stroke();
+
+  // Y-axis ticks (price)
+  const yTicks = 5;
+  ctx.fillStyle = '#64748b';
+  ctx.font = '12px sans-serif';
+  for (let i = 0; i <= yTicks; i++) {
+    const y = topPad + (plotH * i) / yTicks;
+    const price = maxP - ((maxP - minP) * i) / yTicks;
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.beginPath();
+    ctx.moveTo(leftPad, y);
+    ctx.lineTo(c.width - rightPad, y);
+    ctx.stroke();
+    ctx.fillText(price.toFixed(2), 6, y + 4);
+  }
+
+  // X-axis ticks (date)
+  const xTicks = 6;
+  for (let i = 0; i <= xTicks; i++) {
+    const idx = Math.min(data.length - 1, Math.round((data.length - 1) * i / xTicks));
+    const x = leftPad + (plotW * i) / xTicks;
+    const label = data[idx].date || '';
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.beginPath();
+    ctx.moveTo(x, topPad);
+    ctx.lineTo(x, c.height - bottomPad);
+    ctx.stroke();
+    ctx.fillStyle = '#64748b';
+    ctx.fillText(label.slice(5), x - 16, c.height - 10);
+  }
+
+  data.forEach((d, i) => {
+    const x = leftPad + i * w + w / 2;
+    const yH = topPad + (maxP - d.high) * plotH / (maxP - minP || 1);
+    const yL = topPad + (maxP - d.low) * plotH / (maxP - minP || 1);
+    const yO = topPad + (maxP - d.open) * plotH / (maxP - minP || 1);
+    const yC = topPad + (maxP - d.close) * plotH / (maxP - minP || 1);
+
+    const up = d.close >= d.open;
+    ctx.strokeStyle = up ? '#dc2626' : '#16a34a';
+    ctx.fillStyle = up ? '#dc2626' : '#16a34a';
+
+    ctx.beginPath();
+    ctx.moveTo(x, yH);
+    ctx.lineTo(x, yL);
+    ctx.stroke();
+
+    const bodyTop = Math.min(yO, yC);
+    const bodyH = Math.max(1, Math.abs(yC - yO));
+    ctx.fillRect(x - Math.max(1, w * 0.28), bodyTop, Math.max(2, w * 0.56), bodyH);
+  });
+}
+
+async function search() {
+  const query = $('q').value.trim();
+  if (!query) { $('status').textContent = '请输入查询内容'; return; }
+  $('status').textContent = '正在拉取真实数据，请稍候...';
+  const res = await fetch('/api/stock/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, period: $('period').value, interval: $('interval').value })
+  });
+  const d = await res.json();
+  if (d.error) {
+    $('status').textContent = '查询失败: ' + d.error;
+    return;
+  }
+
+  const warn = (d.warnings || []).length ? ` | 提示: ${(d.warnings || []).join(' ; ')}` : '';
+  $('status').textContent = `已查询: ${d.query} -> ${d.symbol}，K线点数: ${(d.kline || []).length}${warn}`;
+  drawKline(d.kline || []);
+
+  const p = d.profile || {};
+  renderKV($('profile'), {
+    '股票代码': p.symbol,
+    '简称': p.shortName,
+    '全称': p.longName,
+    '所属板块': p.sector,
+    '所属行业': p.industry,
+    '国家/地区': p.country,
+    '交易所': p.exchange,
+    '币种': p.currency,
+    '官网': p.website,
+    '公司简介': p.longBusinessSummary,
+  });
+
+  const s = (d.financials || {}).summary || {};
+  renderKV($('summary'), {
+    '总市值': fmt(s.marketCap),
+    '市盈率(TTM)': fmt(s.trailingPE),
+    '预期市盈率': fmt(s.forwardPE),
+    '市净率': fmt(s.priceToBook),
+    '股息率': fmt(s.dividendYield),
+    '净利率': fmt(s.profitMargins),
+    '净资产收益率(ROE)': fmt(s.returnOnEquity),
+    '负债权益比': fmt(s.debtToEquity),
+  });
+
+  renderTable($('income'), (d.financials || {}).income_statement || []);
+  renderTable($('balance'), (d.financials || {}).balance_sheet || []);
+  renderTable($('cashflow'), (d.financials || {}).cashflow || []);
+}
+
+$('go').onclick = search;
+$('q').addEventListener('keydown', (e) => { if (e.key === 'Enter') search(); });
+$('q').value = '英伟达';
+</script>
+</body>
+</html>
