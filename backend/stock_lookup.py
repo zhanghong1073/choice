@@ -107,7 +107,10 @@ def search_stock_bundle(query: str, period: str = "6mo", interval: str = "1d") -
         df = fetch_ohlcv(symbol, period=period, interval=interval)
     except Exception as e:
         return {
-            "error": f"数据源限流或网络抖动：{e}。系统已自动重试，可稍后再试或切换周期。",
+            "error": (
+                f"数据源限流或网络抖动：{e}。"
+                "建议配置 ALPHAVANTAGE_API_KEY（或 STOOQ_API_KEY）以提高稳定性。"
+            ),
             "symbol": symbol,
         }
     if df.empty:

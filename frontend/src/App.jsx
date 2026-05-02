@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react'
-import { Column, Line, Stock } from '@ant-design/plots'
+import { Column } from '@ant-design/plots'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
 
@@ -12,15 +12,18 @@ function fmt(v) {
   return n.toFixed(4).replace(/\.0+$/, '')
 }
 
-function Kline({ data }) {
+function Kline({ data, interval }) {
   const points = useMemo(
     () =>
       (data || []).slice(-240).map((d) => ({
         ...d,
-        dateLabel: (d.date || '').slice(5), // MM-DD
+        dateLabel:
+          interval === '1d' || interval === '1wk'
+            ? (d.date || '').slice(5, 10)
+            : (d.date || '').replace('T', ' ').slice(5, 16),
         trend: Number(d.close) >= Number(d.open) ? '涨' : '跌',
       })),
-    [data]
+    [data, interval]
   )
   if (!points.length) return <div className="empty">暂无K线数据</div>
 
@@ -51,71 +54,22 @@ function Kline({ data }) {
     dir: Number(d.close) >= Number(d.open) ? '涨' : '跌',
   }))
 
-  const config = {
-    autoFit: true,
-    height: 360,
-    data: points,
-    xField: 'dateLabel',
-    yField: ['open', 'close', 'high', 'low'],
-    colorField: 'trend',
-    color: ({ trend }) => (trend === '涨' ? '#dc2626' : '#16a34a'),
-    risingFill: '#dc2626',
-    fallingFill: '#16a34a',
-    risingStroke: '#dc2626',
-    fallingStroke: '#16a34a',
-    style: ({ trend }) => ({
-      fill: trend === '涨' ? '#dc2626' : '#16a34a',
-      stroke: trend === '涨' ? '#dc2626' : '#16a34a',
-      fillOpacity: 1,
-      strokeOpacity: 1,
-      lineWidth: 1,
-    }),
-    state: {
-      active: { style: { lineWidth: 1.2 } },
-      inactive: { style: { opacity: 1 } },
-    },
-    tooltip: {
-      title: (d) => `日期: ${d.date}`,
-    },
-    axis: {
-      x: { title: '日期' },
-      y: { title: '价格' },
-    },
-    scale: {
-      y: { domain: [priceMin, priceMax] },
-    },
-    slider: { start: rangeStart, end: 1 },
+  const maColor = {
+    MA5: '#f59e0b',
+    MA10: '#06b6d4',
+    MA20: '#8b5cf6',
+    MA60: '#2563eb',
   }
-
-  const maConfig = {
-    autoFit: true,
-    height: 360,
-    data: maData,
-    xField: 'dateLabel',
-    yField: 'value',
-    seriesField: 'type',
-    colorField: 'type',
-    scale: {
-      color: {
-        domain: ['MA5', 'MA10', 'MA20', 'MA60'],
-        range: ['#f59e0b', '#06b6d4', '#8b5cf6', '#2563eb'],
-      },
-      y: { domain: [priceMin, priceMax] },
-    },
-    smooth: false,
-    legend: { position: 'top-left' },
-    tooltip: { title: (d) => `日期: ${d.date}` },
-    axis: {
-      x: false,
-      y: false,
-    },
-    style: {
-      lineWidth: 1.5,
-    },
-    interaction: {
-      tooltip: { shared: true },
-    },
-  }
+  const w = 1100
+  const h = 360
+  const left = 56
+  const right = 16
+  const top = 12
+  const bottom = 28
+  const plotW = w - left - right
+  const plotH = h - top - bottom
+  const yScale = (v) => top + ((priceMax - v) * plotH) / (priceMax - priceMin || 1)
+  const xScale = (i) => left + (i * plotW) / Math.max(1, points.length - 1)
 
   const volConfig = {
     autoFit: true,
@@ -135,10 +89,36 @@ function Kline({ data }) {
   return (
     <div className="klineBlock">
       <div className="klineMain">
-        <Stock {...config} />
-        <div className="klineOverlay">
-          <Line {...maConfig} />
-        </div>
+        <svg viewBox={`0 0 ${w} ${h}`} className="kline">
+          <rect x={left} y={top} width={plotW} height={plotH} fill="#fff" stroke="#e5e7eb" />
+          {points.map((d, i) => {
+            const x = xScale(i)
+            const color = d.trend === '涨' ? '#dc2626' : '#16a34a'
+            const yH = yScale(Number(d.high))
+            const yL = yScale(Number(d.low))
+            const yO = yScale(Number(d.open))
+            const yC = yScale(Number(d.close))
+            const bodyTop = Math.min(yO, yC)
+            const bodyH = Math.max(1, Math.abs(yC - yO))
+            const bodyW = Math.max(2, plotW / points.length * 0.6)
+            return (
+              <g key={`${d.date}-${i}`}>
+                <line x1={x} y1={yH} x2={x} y2={yL} stroke={color} strokeWidth="1.2" />
+                <rect x={x - bodyW / 2} y={bodyTop} width={bodyW} height={bodyH} fill={color} stroke={color} />
+              </g>
+            )
+          })}
+          {Object.keys(maColor).map((name) => {
+            const arr = maData.filter((m) => m.type === name)
+            if (!arr.length) return null
+            const pts = arr.map((m) => {
+              const idx = points.findIndex((p) => p.dateLabel === m.dateLabel)
+              if (idx < 0) return null
+              return `${xScale(idx)},${yScale(Number(m.value))}`
+            }).filter(Boolean).join(' ')
+            return <polyline key={name} points={pts} fill="none" stroke={maColor[name]} strokeWidth="1.4" />
+          })}
+        </svg>
       </div>
       <div className="klineVolume">
         <Column {...volConfig} />
@@ -185,15 +165,26 @@ export default function App() {
   const [msg, setMsg] = useState('')
   const [bundle, setBundle] = useState(null)
 
-  const search = async () => {
-    if (!query.trim()) return setMsg('请输入查询内容')
+  const intervalOptions = [
+    { label: '30m', value: '30m', period: '5d' },
+    { label: '2h', value: '2h', period: '60d' },
+    { label: '4h', value: '4h', period: '60d' },
+    { label: '1D', value: '1d', period: '6mo' },
+    { label: '1W', value: '1wk', period: '2y' },
+  ]
+
+  const search = async (override = {}) => {
+    const q = (override.query ?? query).trim()
+    const p = override.period ?? period
+    const iv = override.interval ?? interval
+    if (!q) return setMsg('请输入查询内容')
     setLoading(true)
     setMsg('正在拉取真实数据...')
     try {
       const res = await fetch(`${API_BASE}/api/stock/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, period, interval })
+        body: JSON.stringify({ query: q, period: p, interval: iv })
       })
       const d = await res.json()
       if (d.error) {
@@ -215,22 +206,43 @@ export default function App() {
   const profile = bundle?.profile || {}
   const fin = bundle?.financials || {}
 
+  const onSwitchInterval = (opt) => {
+    setInterval(opt.value)
+    setPeriod(opt.period)
+    search({ interval: opt.value, period: opt.period })
+  }
+
   return (
     <div className="page">
       <div className="card">
         <h1>美股中文搜索系统</h1>
-        <p className="muted">Python FastAPI + React + Vite</p>
         <div className="searchbar">
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="输入中文名或Ticker，如 苹果 / NVDA" />
           <select value={period} onChange={(e) => setPeriod(e.target.value)}><option value="3mo">3个月</option><option value="6mo">6个月</option><option value="1y">1年</option><option value="2y">2年</option></select>
-          <select value={interval} onChange={(e) => setInterval(e.target.value)}><option value="1d">日K</option><option value="1wk">周K</option></select>
+          <select value={interval} onChange={(e) => setInterval(e.target.value)}><option value="30m">30m</option><option value="2h">2h</option><option value="4h">4h</option><option value="1d">1D</option><option value="1wk">1W</option></select>
           <button onClick={search} disabled={loading}>{loading ? '查询中...' : '搜索'}</button>
         </div>
         <div className="muted">{msg}</div>
       </div>
 
       <div className="grid">
-        <div className="card"><h3>K线图</h3><Kline data={bundle?.kline || []} /></div>
+        <div className="card">
+          <div className="klineHeader">
+            <h3>K线图</h3>
+            <div className="intervalTabs">
+              {intervalOptions.map((opt) => (
+                <button
+                  key={opt.value}
+                  className={`tabBtn ${interval === opt.value ? 'active' : ''}`}
+                  onClick={() => onSwitchInterval(opt)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <Kline data={bundle?.kline || []} interval={interval} />
+        </div>
         <div className="card"><h3>公司资料</h3><KV data={{'股票代码': profile.symbol,'简称': profile.shortName,'全称': profile.longName,'所属板块': profile.sector,'所属行业': profile.industry,'国家/地区': profile.country,'交易所': profile.exchange,'币种': profile.currency,'官网': profile.website,'公司简介': profile.longBusinessSummary}} /></div>
       </div>
 

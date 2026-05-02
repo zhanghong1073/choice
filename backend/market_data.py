@@ -23,6 +23,10 @@ _CACHE_TTL_SECONDS = 180
 _DISK_CACHE_MAX_AGE_SECONDS = 7 * 24 * 3600
 _CACHE_DIR = Path(__file__).resolve().parent.parent / "data_cache"
 _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_HTTP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+}
 
 
 def _cache_file(ticker: str, period: str, interval: str) -> Path:
@@ -89,16 +93,18 @@ def fetch_ohlcv(ticker: str, period: str = "1y", interval: str = "1d") -> pd.Dat
 
     df = pd.DataFrame()
     last_err: Exception | None = None
+    is_intraday = interval in {"30m", "60m", "90m", "1h", "2h", "4h"}
 
     # Path 1: Alpha Vantage (primary non-Yahoo source when API key is provided).
     av_key = os.getenv("ALPHAVANTAGE_API_KEY", "").strip()
-    if av_key:
+    if av_key and interval in {"1d", "1wk"}:
         try:
             fn = "TIME_SERIES_DAILY_ADJUSTED" if interval == "1d" else "TIME_SERIES_WEEKLY_ADJUSTED"
             url = "https://www.alphavantage.co/query"
             resp = requests.get(
                 url,
                 params={"function": fn, "symbol": ticker.upper(), "outputsize": "full", "apikey": av_key},
+                headers=_HTTP_HEADERS,
                 timeout=10,
             )
             resp.raise_for_status()
@@ -129,11 +135,15 @@ def fetch_ohlcv(ticker: str, period: str = "1y", interval: str = "1d") -> pd.Dat
             last_err = e
 
     # Path 2: Stooq fallback (non-Yahoo, no key).
-    if df.empty:
+    if df.empty and interval in {"1d", "1wk"}:
         try:
+            stooq_key = os.getenv("STOOQ_API_KEY", "").strip()
             stooq_symbol = f"{ticker.lower()}.us"
-            stooq_url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i=d"
-            resp = requests.get(stooq_url, timeout=8)
+            stooq_url = "https://stooq.com/q/d/l/"
+            params = {"s": stooq_symbol, "i": "d"}
+            if stooq_key:
+                params["apikey"] = stooq_key
+            resp = requests.get(stooq_url, params=params, headers=_HTTP_HEADERS, timeout=8)
             resp.raise_for_status()
             text = resp.text.strip()
             if text and "No data" not in text and "404" not in text:
@@ -173,14 +183,20 @@ def fetch_ohlcv(ticker: str, period: str = "1y", interval: str = "1d") -> pd.Dat
         if not df.empty:
             break
         try:
+            yf_interval = "1h" if interval == "2h" else "1h" if interval == "4h" else interval
             df = yf.download(
                 ticker,
-                period=period,
-                interval=interval,
+                period="60d" if is_intraday and period in {"6mo", "1y", "2y"} else period,
+                interval=yf_interval,
                 auto_adjust=True,
                 progress=False,
                 threads=False,
             )
+            if interval in {"2h", "4h"} and not df.empty:
+                rule = "2H" if interval == "2h" else "4H"
+                agg = {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
+                if not isinstance(df.columns, pd.MultiIndex):
+                    df = df.resample(rule).agg(agg).dropna(subset=["Open", "High", "Low", "Close"])
             if not df.empty:
                 df.attrs["source"] = "yfinance-download"
                 break
@@ -192,21 +208,31 @@ def fetch_ohlcv(ticker: str, period: str = "1y", interval: str = "1d") -> pd.Dat
     if df.empty:
         try:
             tk = yf.Ticker(ticker)
-            df = tk.history(period=period, interval=interval, auto_adjust=True)
+            yf_interval = "1h" if interval == "2h" else "1h" if interval == "4h" else interval
+            df = tk.history(
+                period="60d" if is_intraday and period in {"6mo", "1y", "2y"} else period,
+                interval=yf_interval,
+                auto_adjust=True,
+            )
+            if interval in {"2h", "4h"} and not df.empty:
+                rule = "2H" if interval == "2h" else "4H"
+                agg = {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
+                if not isinstance(df.columns, pd.MultiIndex):
+                    df = df.resample(rule).agg(agg).dropna(subset=["Open", "High", "Low", "Close"])
             if not df.empty:
                 df.attrs["source"] = "yfinance-history"
         except Exception as e:
             last_err = e
 
     # Path 5: Yahoo chart endpoint fallback.
-    if df.empty:
+    if df.empty and interval in {"1d", "1wk"}:
         try:
             range_map = {"3mo": "3mo", "6mo": "6mo", "1y": "1y", "2y": "2y"}
             interval_map = {"1d": "1d", "1wk": "1wk"}
             r = range_map.get(period, "6mo")
             iv = interval_map.get(interval, "1d")
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-            resp = requests.get(url, params={"range": r, "interval": iv}, timeout=8)
+            resp = requests.get(url, params={"range": r, "interval": iv}, headers=_HTTP_HEADERS, timeout=8)
             resp.raise_for_status()
             js = resp.json()
             result = (((js or {}).get("chart") or {}).get("result") or [None])[0]

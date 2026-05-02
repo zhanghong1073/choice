@@ -17,6 +17,20 @@ button:hover { background: var(--brand2); }
 .muted { color: var(--muted); }
 .grid { display: grid; gap: 14px; grid-template-columns: 1.4fr 1fr; }
 .kline { width: 100%; height: auto; border: 1px solid #e2e8f0; border-radius: 10px; }
+.klineHeader { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.klineHeader h3 { margin: 0; }
+.intervalTabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.tabBtn {
+  width: auto;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #334155;
+  font-weight: 600;
+}
+.tabBtn:hover { background: #f1f5f9; }
+.tabBtn.active { background: #0f766e; color: #fff; border-color: #0f766e; }
 .klineBlock { display: grid; gap: 8px; }
 .klineMain { position: relative; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden; }
 .klineOverlay {
